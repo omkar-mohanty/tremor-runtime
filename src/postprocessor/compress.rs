@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::Postprocessor;
+use super::{Postprocessor, Config};
 use crate::errors::Result;
 use simd_json::ValueAccess;
 use std::{io::Write, str};
@@ -50,7 +50,9 @@ impl Postprocessor for Zlib {
 }
 
 #[derive(Default)]
-struct Xz2 {}
+struct Xz2 {
+    compression_level:i8,
+}
 impl Postprocessor for Xz2 {
     fn name(&self) -> &str {
         "xz2"
@@ -58,10 +60,19 @@ impl Postprocessor for Xz2 {
 
     fn process(&mut self, _ingres_ns: u64, _egress_ns: u64, data: &[u8]) -> Result<Vec<Vec<u8>>> {
         use xz2::write::XzEncoder as Encoder;
-        let mut encoder = Encoder::new(Vec::new(), 9);
+        let mut encoder = Encoder::new(Vec::new(), self.compression_level);
         encoder.write_all(data)?;
         Ok(vec![encoder.finish()?])
     }
+
+   fn set_compression_level(&mut self, config: Config ) -> Result<()> {
+       match config {
+            Config::Custom(level) => self.compression_level = level,
+            Default => self.compression_level = 9,
+       } 
+
+       Ok(())
+   }
 }
 
 #[derive(Default)]
@@ -80,10 +91,21 @@ impl Postprocessor for Snappy {
             .map_err(|e| format!("Snappy compression postprocessor error: {}", e))?;
         Ok(vec![compressed])
     }
+
+    fn set_compression_level(&mut self, config:Config) -> Result<()> {
+                
+        if let Config::Custom(_) = config {
+            return  Err(format!("compression level not supported for Snappy").into())
+        } 
+
+        Ok(())   
+    }
 }
 
 #[derive(Default)]
-struct Lz4 {}
+struct Lz4 {
+    compression_level: u32,
+}
 impl Postprocessor for Lz4 {
     fn name(&self) -> &str {
         "lz4"
@@ -92,14 +114,28 @@ impl Postprocessor for Lz4 {
     fn process(&mut self, _ingres_ns: u64, _egress_ns: u64, data: &[u8]) -> Result<Vec<Vec<u8>>> {
         use lz4::EncoderBuilder;
         let buffer = Vec::<u8>::new();
-        let mut encoder = EncoderBuilder::new().level(4).build(buffer)?;
+        let mut encoder = EncoderBuilder::new().level(self.compression_level).build(buffer)?;
         encoder.write_all(data)?;
         Ok(vec![encoder.finish().0])
+    }
+
+    fn set_compression_level(&mut self, config:Config) -> Result<()> {
+         match config {
+            Config::Custom(level) => self.compression_level = level as u32,
+            Default => self.compression_level = 4,
+        }        
+        Ok(())   
+    }
+
+    fn get_compression_level(&self) -> i64 {
+       self.compression_level 
     }
 }
 
 #[derive(Clone, Default, Debug)]
-struct Zstd {}
+struct Zstd {
+    compression_level: i64,
+}
 impl Postprocessor for Zstd {
     fn name(&self) -> &str {
         "zstd"
@@ -107,8 +143,20 @@ impl Postprocessor for Zstd {
 
     fn process(&mut self, _ingres_ns: u64, _egress_ns: u64, data: &[u8]) -> Result<Vec<Vec<u8>>> {
         // Value of 0 indicates default level for encode.
-        let compressed = zstd::encode_all(data, 0)?;
+        let compressed = zstd::encode_all(data, self.compression_level)?;
         Ok(vec![compressed])
+    }
+
+    fn set_compression_level(&mut self, config:Config) -> Result<()> {
+        match config {
+            Config::Custom(level) => self.compression_level = level as u32,
+            Default => self.compression_level = 0,
+        }        
+        Ok(())
+    }
+
+    fn get_compression_level(&self) -> i64{
+        self.compression_level
     }
 }
 
@@ -127,6 +175,23 @@ impl Compress {
                 "zstd" => Box::new(Zstd::default()),
                 other => return Err(format!("Unknown compression algorithm: {other}").into()),
             };
+
+         match config.get_str("level") {
+           Some(level) => {
+                match level.parse::<i64>() {
+                    Ok(compression_level) => {
+                         if let Err(msg) = codec.set_compression_level(Config::Custom(compression_level)){
+                            return Err(msg);
+                        }
+                    },
+                    Err(_) => return Err(format!("failed parsing compression_level").into()),
+                }
+           },
+           None => {
+               codec.set_compression_level(Config::Default);
+           },
+        }
+
         Ok(Compress { codec })
     }
 }
@@ -136,5 +201,11 @@ impl Postprocessor for Compress {
     }
     fn process(&mut self, ingres_ns: u64, egress_ns: u64, data: &[u8]) -> Result<Vec<Vec<u8>>> {
         self.codec.process(ingres_ns, egress_ns, data)
+    }
+    fn set_compression_level(&mut self, config:Config) -> Result<()> {
+        self.codec.set_compression_level(config)
+    }
+    fn get_compression_level(&self) -> i64 {
+        return self.codec.get_compression_level()
     }
 }

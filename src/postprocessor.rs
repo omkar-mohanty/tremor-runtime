@@ -27,6 +27,11 @@ pub type Postprocessors = Vec<Box<dyn Postprocessor>>;
 pub(crate) use compress::Compress;
 use std::{io::Write, mem, str};
 
+pub enum Config {
+   Custom(i64),
+   Default,
+}
+
 trait PostprocessorState {}
 /// Postprocessor trait
 pub trait Postprocessor: Send + Sync {
@@ -49,6 +54,10 @@ pub trait Postprocessor: Send + Sync {
     fn finish(&mut self, _data: Option<&[u8]>) -> Result<Vec<Vec<u8>>> {
         Ok(vec![])
     }
+
+    fn set_compression_level(&mut self, config:Config ) -> Result<()>;
+
+    fn get_compression_level(&self) -> i64;
 }
 
 /// Lookup a postprocessor via its config
